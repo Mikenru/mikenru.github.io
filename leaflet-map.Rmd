@@ -1,0 +1,155 @@
+---
+title: "The Seven Summits — An Interactive Leaflet Map"
+author: "Developing Data Products — Course Project"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: false
+    self_contained: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(jsonlite)
+```
+
+## About this map
+
+The **Seven Summits** are the highest mountains on each of the seven
+continents — a mountaineering challenge first completed in 1985. This page,
+knit from R Markdown on **`r format(Sys.Date(), '%B %d, %Y')`**, plots them on
+an interactive [Leaflet](https://leafletjs.com/) map.
+
+The data below is assembled in R; each peak's **marker size scales with its
+elevation** and its **color encodes the continent**. Click any circle for
+details, use the layer control (top-right) to switch the basemap, and drag /
+zoom to explore.
+
+```{r data}
+summits <- data.frame(
+  peak      = c("Mount Everest", "Aconcagua", "Denali", "Kilimanjaro",
+                "Mount Elbrus", "Mount Vinson", "Carstensz Pyramid"),
+  continent = c("Asia", "South America", "North America", "Africa",
+                "Europe", "Antarctica", "Oceania"),
+  country   = c("Nepal / China", "Argentina", "United States", "Tanzania",
+                "Russia", "Antarctica", "Indonesia"),
+  lat       = c( 27.9881, -32.6532,  63.0692, -3.0674,
+                 43.3499, -78.5254,  -4.0784),
+  lng       = c( 86.9250, -70.0109, -151.0070, 37.3556,
+                 42.4453, -85.6171, 137.1815),
+  elev_m    = c(8849, 6961, 6190, 5895, 5642, 4892, 4884),
+  ascent    = c(1953, 1897, 1913, 1889, 1874, 1966, 1962),
+  stringsAsFactors = FALSE
+)
+
+# Colour per continent
+palette <- c("Asia" = "#e6194B", "South America" = "#3cb44b",
+             "North America" = "#4363d8", "Africa" = "#f58231",
+             "Europe" = "#911eb4", "Antarctica" = "#42d4f4",
+             "Oceania" = "#f032e6")
+summits$color <- palette[summits$continent]
+
+# Marker radius scales linearly with elevation (8 px .. 26 px)
+rng <- range(summits$elev_m)
+summits$radius <- round(8 + (summits$elev_m - rng[1]) / diff(rng) * 18, 1)
+
+knitr::kable(
+  summits[, c("peak", "continent", "country", "elev_m", "ascent")],
+  col.names = c("Peak", "Continent", "Country", "Elevation (m)", "First ascent"),
+  caption = "The Seven Summits, highest peaks by continent."
+)
+```
+
+```{r map, results='asis', echo=FALSE}
+# Serialise the R data frame to JSON for the Leaflet map, and build a
+# continent -> colour lookup for the legend.
+summit_json <- toJSON(summits, dataframe = "rows", auto_unbox = TRUE)
+legend_json <- toJSON(as.list(palette), auto_unbox = TRUE)
+
+cat(sprintf('
+<link rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<div id="map" style="height:540px; width:100%%; border-radius:10px;
+     box-shadow:0 2px 10px rgba(0,0,0,0.15); margin:1em 0;"></div>
+
+<script>
+(function () {
+  var summits = %s;
+  var legend  = %s;
+
+  function draw() {
+    var map = L.map("map", { scrollWheelZoom: false }).setView([20, 10], 2);
+
+    var streets = L.tileLayer(
+      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      { maxZoom: 18,
+        attribution: "&copy; OpenStreetMap contributors" }).addTo(map);
+
+    var terrain = L.tileLayer(
+      "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+      { maxZoom: 17,
+        attribution: "Map data: &copy; OpenStreetMap contributors, SRTM | " +
+                     "Style: &copy; OpenTopoMap (CC-BY-SA)" });
+
+    L.control.layers(
+      { "Streets": streets, "Terrain": terrain },
+      null, { collapsed: false }).addTo(map);
+
+    var bounds = [];
+    summits.forEach(function (s) {
+      bounds.push([s.lat, s.lng]);
+      L.circleMarker([s.lat, s.lng], {
+        radius: s.radius, color: "#333", weight: 1,
+        fillColor: s.color, fillOpacity: 0.85
+      }).addTo(map).bindPopup(
+        "<b>" + s.peak + "</b><br>" +
+        "Highest point of <b>" + s.continent + "</b><br>" +
+        s.country + "<br>" +
+        "Elevation: <b>" + s.elev_m.toLocaleString() + " m</b><br>" +
+        "First ascent: " + s.ascent
+      );
+    });
+    map.fitBounds(bounds, { padding: [40, 40] });
+
+    // Legend
+    var lg = L.control({ position: "bottomright" });
+    lg.onAdd = function () {
+      var d = L.DomUtil.create("div");
+      d.style.background = "white";
+      d.style.padding = "8px 10px";
+      d.style.borderRadius = "6px";
+      d.style.font = "13px/1.4 sans-serif";
+      d.style.boxShadow = "0 1px 4px rgba(0,0,0,0.3)";
+      var html = "<b>Continent</b><br>";
+      Object.keys(legend).forEach(function (k) {
+        html += \'<span style="display:inline-block;width:11px;height:11px;\' +
+                \'border-radius:50%%;margin-right:6px;background:\' +
+                legend[k] + \'"></span>\' + k + "<br>";
+      });
+      d.innerHTML = html;
+      return d;
+    };
+    lg.addTo(map);
+  }
+
+  if (window.L) { draw(); }
+  else { window.addEventListener("load", draw); }
+})();
+</script>
+', summit_json, legend_json))
+```
+
+## How it was built
+
+This document is **R Markdown**. The peak data is a plain R `data.frame`,
+serialised to JSON with `jsonlite::toJSON()`, and rendered by the
+[Leaflet](https://leafletjs.com/) JavaScript library (`leaflet@1.9.4`). Marker
+radius is computed in R from elevation, and continent colours drive both the
+markers and the legend.
+
+*Sources: peak elevations and first-ascent years from public references;
+basemaps &copy; OpenStreetMap contributors and OpenTopoMap (CC-BY-SA).*
