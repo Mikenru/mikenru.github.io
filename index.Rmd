@@ -1,0 +1,245 @@
+---
+title: "Predicting Weight-Lifting Exercise Quality from Accelerometer Data"
+author: "Practical Machine Learning — Course Project"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme: readable
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center", fig.width = 7, fig.height = 4.2)
+set.seed(1337)
+```
+
+# Overview
+
+Wearable devices make it cheap to quantify *how much* activity a person does,
+but rarely *how well* they do it. Using accelerometer, gyroscope and
+magnetometer readings from sensors on the **belt, forearm, arm and dumbbell**
+of six participants, this report builds a classifier that predicts the manner
+in which a barbell lift was performed — the `classe` variable, with five
+levels: exactly according to specification (**A**) and four common mistakes
+(**B–E**).
+
+The final model is a **random forest** trained on 52 sensor features. It
+achieves an estimated **out-of-sample accuracy above 99%** (error < 1%),
+validated both by 5-fold cross-validation and by a held-out validation set,
+and it classifies all **20 quiz test cases**.
+
+```{r libraries}
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+```
+
+# Loading the Data
+
+The data originate from the Weight Lifting Exercise Dataset
+(Velloso *et al.*, 2013). Strings `"NA"`, `""` and the Excel error
+`"#DIV/0!"` are all read as missing values.
+
+```{r load}
+train_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+test_url  <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+if (!file.exists("data/pml-training.csv")) {
+  dir.create("data", showWarnings = FALSE)
+  download.file(train_url, "data/pml-training.csv")
+  download.file(test_url,  "data/pml-testing.csv")
+}
+na_strings <- c("NA", "", "#DIV/0!")
+training <- read.csv("data/pml-training.csv", na.strings = na_strings)
+testing  <- read.csv("data/pml-testing.csv",  na.strings = na_strings)
+dim(training); dim(testing)
+```
+
+The raw data has **160 columns**. The target `classe` is reasonably balanced
+across its five levels:
+
+```{r classe-dist, fig.height=3.4}
+training$classe <- factor(training$classe)
+barplot(table(training$classe),
+        col = "steelblue", border = NA,
+        main = "Distribution of the outcome (classe)",
+        xlab = "Exercise manner", ylab = "Count")
+```
+
+# Cleaning and Feature Selection
+
+Two groups of columns carry no useful predictive signal and are removed:
+
+1. **Summary/aggregate columns.** 100 columns (`kurtosis_*`, `skewness_*`,
+   `max_*`, `min_*`, `avg_*`, `stddev_*`, `var_*`, `amplitude_*`) are populated
+   only on the `new_window == "yes"` rows and are therefore *entirely missing*
+   in the 20-case test set. A column that is all-`NA` in the test set cannot
+   help predict it, so all near-empty columns are dropped.
+2. **Identifier / bookkeeping columns.** The first seven columns
+   (row index, `user_name`, three timestamps, `new_window`, `num_window`) are
+   metadata. Using them would let the model "cheat" by memorising when each
+   record was collected rather than learning the *physics* of the movement,
+   which would not generalise to new subjects.
+
+```{r clean}
+# 1. drop columns that are mostly NA
+na_frac  <- colMeans(is.na(training))
+keep     <- na_frac < 0.90
+training <- training[, keep]
+testing  <- testing[,  keep]
+
+# 2. drop the first 7 identifier / timestamp columns
+training <- training[, -(1:7)]
+testing  <- testing[,  -(1:7)]
+
+dim(training)
+```
+
+This leaves **`r ncol(training) - 1` numeric sensor predictors** plus the
+outcome — a complete-case matrix with no missing values remaining
+(`sum(is.na) = `r sum(is.na(training))``).
+
+# Data Splitting and Cross-Validation Strategy
+
+To obtain an honest estimate of out-of-sample performance, the labelled data
+is partitioned into a **70% training** set and a **30% validation** set. The
+validation set is touched only once, at the very end, to estimate the
+generalisation error.
+
+```{r split}
+n <- nrow(training)
+idx      <- sample(seq_len(n), size = floor(0.70 * n))
+train_df <- training[idx, ]
+valid_df <- training[-idx, ]
+c(train = nrow(train_df), validation = nrow(valid_df))
+```
+
+**Cross-validation** is used *inside* the training set to choose the model and
+estimate its error before ever looking at the validation set. Below is an
+explicit **5-fold cross-validation** of the random forest: the training data is
+split into 5 folds; each fold is held out in turn while a forest is fit on the
+other four, and accuracy is measured on the held-out fold.
+
+```{r cv}
+k      <- 5
+folds  <- sample(rep(1:k, length.out = nrow(train_df)))
+cv_acc <- numeric(k)
+for (i in 1:k) {
+  fit_i <- randomForest(classe ~ ., data = train_df[folds != i, ],
+                        ntree = 150)
+  pred_i <- predict(fit_i, train_df[folds == i, ])
+  cv_acc[i] <- mean(pred_i == train_df$classe[folds == i])
+}
+round(cv_acc, 4)
+cat(sprintf("Mean 5-fold CV accuracy: %.4f  (CV error estimate: %.4f)\n",
+            mean(cv_acc), 1 - mean(cv_acc)))
+```
+
+The five folds agree closely (low variance), and the **mean CV error is well
+under 1%**, so a random forest is clearly an appropriate choice.
+
+# Model Building
+
+## Why Random Forest
+
+Random forests are a strong default for this problem: they capture the
+non-linear interactions between joint angles and accelerations, are robust to
+correlated predictors and different feature scales, need little tuning, and
+provide a built-in **out-of-bag (OOB)** error estimate — itself a form of
+cross-validation, since every tree is evaluated on the ~1/3 of samples it did
+not see.
+
+For context, a single decision tree (`rpart`) is fit first as an
+interpretable baseline.
+
+```{r tree, fig.height=4.6}
+tree_fit <- rpart(classe ~ ., data = train_df, method = "class")
+rpart.plot(tree_fit, type = 2, extra = 104, box.palette = "GnBu",
+           tweak = 1.0, main = "Baseline: single decision tree")
+tree_acc <- mean(predict(tree_fit, valid_df, type = "class") == valid_df$classe)
+```
+
+The single tree reaches only about **`r round(100*tree_acc)`% validation
+accuracy** — decent, but far from enough. The random forest is fit next on the
+full training set.
+
+```{r rf}
+rf_fit <- randomForest(classe ~ ., data = train_df, ntree = 250,
+                       importance = TRUE)
+rf_fit
+```
+
+The printed **OOB estimate of error rate** is under 1%, consistent with the
+5-fold CV result above.
+
+## Variable Importance
+
+The most influential predictors are dominated by the belt sensor's roll/yaw
+and the dumbbell/forearm readings — physically sensible, since these capture
+the trunk and lifting-arm motion that distinguish correct from incorrect form.
+
+```{r importance, fig.height=4.8}
+varImpPlot(rf_fit, n.var = 15, type = 2,
+           main = "Top 15 predictors (mean decrease in Gini)")
+```
+
+# Out-of-Sample Error Estimate
+
+The model is now scored **once** on the held-out validation set — data it has
+never seen — to estimate the true out-of-sample error.
+
+```{r validate}
+rf_pred <- predict(rf_fit, valid_df)
+cm      <- table(Predicted = rf_pred, Actual = valid_df$classe)
+cm
+val_acc <- sum(diag(cm)) / sum(cm)
+cat(sprintf("Validation accuracy: %.4f\n", val_acc))
+cat(sprintf("Estimated out-of-sample error: %.4f (%.2f%%)\n",
+            1 - val_acc, 100 * (1 - val_acc)))
+```
+
+**Expected out-of-sample error.** Three independent estimates agree:
+
+| Method | Error estimate |
+|---|---|
+| 5-fold cross-validation | `r sprintf("%.2f%%", 100*(1-mean(cv_acc)))` |
+| Random-forest OOB | `r sprintf("%.2f%%", 100*rf_fit$err.rate[nrow(rf_fit$err.rate),"OOB"])` |
+| Held-out validation set | `r sprintf("%.2f%%", 100*(1-val_acc))` |
+
+All three sit **below 1%**, so I expect the classifier to misclassify roughly
+one lift in a hundred on new data from these participants. The agreement
+between the OOB/CV estimates and the untouched validation set indicates the
+model is **not overfit**.
+
+# Predicting the 20 Test Cases
+
+Finally, the fitted random forest is applied to the 20 quiz cases. To use all
+available labelled data for the final predictions, the model is refit on the
+full cleaned training set before predicting.
+
+```{r predict-final}
+final_rf <- randomForest(classe ~ ., data = training, ntree = 250)
+final_predictions <- predict(final_rf, testing)
+data.frame(problem_id = testing$problem_id, prediction = final_predictions)
+```
+
+Given the < 1% estimated per-observation error, the probability of getting all
+20 predictions correct is roughly `0.99^20 ≈ 82%`, so a near-perfect quiz score
+is expected.
+
+# Conclusion
+
+After removing metadata and the 100 all-missing summary columns, a random
+forest on the 52 raw sensor features cleanly separates the five ways of
+performing the lift. Cross-validation, the out-of-bag estimate, and an
+independent validation set **all agree on an out-of-sample error below 1%**,
+giving high confidence in the 20 test-case predictions above.
+
+*Data source: Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H.
+"Qualitative Activity Recognition of Weight Lifting Exercises." Proceedings of
+4th International Conference in Cooperation with SIGCHI (Augmented Human '13),
+Stuttgart, Germany, 2013. Used with permission.*
