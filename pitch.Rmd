@@ -1,0 +1,94 @@
+---
+title: "mtcars MPG Predictor"
+subtitle: "A Shiny app that estimates fuel economy"
+author: "Developing Data Products -- Course Project"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  ioslides_presentation:
+    widescreen: true
+    smaller: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+## The problem
+
+How many **miles per gallon** should you expect from a car, given a few basic
+specs -- its weight, horsepower, cylinders and transmission?
+
+- Buyers and students want a quick, interpretable estimate.
+- The classic `mtcars` dataset (32 cars, 1974 *Motor Trend*) is perfect for a
+  small, reproducible model.
+
+The **mtcars MPG Predictor** turns that dataset into an interactive tool: move a
+few sliders and get an instant, model-based MPG estimate.
+
+**Live app:** `https://YOUR-USERNAME.shinyapps.io/mtcars-mpg-app/`
+**Source:** `ui.R` and `server.R` on GitHub.
+
+## The model (runs when slidified)
+
+The app fits one ordinary least-squares regression on startup. Here it is,
+evaluated live in this slide deck:
+
+```{r model}
+fit <- lm(mpg ~ wt + hp + factor(cyl) + factor(am), data = mtcars)
+round(coef(fit), 2)
+```
+
+Interpretation: heavier, higher-horsepower cars lose MPG; a manual transmission
+(`factor(am)1`) and fewer cylinders tend to add MPG. The model explains a large
+share of the variation:
+
+```{r rsq}
+paste0("Adjusted R-squared: ", round(summary(fit)$adj.r.squared, 3))
+```
+
+## A worked prediction
+
+A user who dials in a 3,200-lb, 150-hp, 6-cylinder car with a manual gearbox
+gets this estimate -- computed exactly as the Shiny server does:
+
+```{r predict}
+newcar <- data.frame(wt = 3.2, hp = 150, cyl = 6, am = 1)
+round(predict(fit, newcar), 1)
+```
+
+```{r plot, echo=FALSE, fig.height=3.2, fig.width=9}
+library(ggplot2)
+newcar$mpg <- predict(fit, newcar)
+ggplot(mtcars, aes(wt, mpg)) +
+  geom_point(color = "steelblue", size = 2, alpha = 0.7) +
+  geom_point(data = newcar, aes(wt, mpg), color = "red", size = 5) +
+  labs(x = "Weight (1000 lbs)", y = "Miles per gallon",
+       title = "Your car (red) vs. the 32 mtcars cars") +
+  theme_minimal(base_size = 13)
+```
+
+## Using the app
+
+The interface is deliberately simple -- no R knowledge required:
+
+1. **Sliders** set weight and horsepower.
+2. **Radio buttons** choose cylinders (4 / 6 / 8) and transmission.
+3. The predicted **MPG** updates instantly at the top of the page.
+4. A **Plotly** chart marks your car in red against the real data.
+
+Every screen has built-in help, and a **Documentation** tab explains the model
+in plain language. Inputs flow through a `reactive()` expression in `server.R`,
+so output refreshes with no button press.
+
+## Why it's useful
+
+- **Reproducible:** one dataset, one transparent linear model, all in ~90 lines
+  of `ui.R` + `server.R`.
+- **Interactive & instant:** reactive prediction and an interactive Plotly plot.
+- **Self-documenting:** novice users get started with no prerequisites.
+- **Extensible:** swap in another dataset or add predictors in a few lines.
+
+> Try it, move the sliders, and see how weight and horsepower trade off against
+> fuel economy.
+
+Thank you!
